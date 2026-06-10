@@ -447,7 +447,8 @@ let unsubscribe = null;
 
 // Per-client custom period { from: 'YYYY-MM-DD', to: 'YYYY-MM-DD' } or null
 let clientPeriods = { anton: null, dima: null, misc: null };
-// Which client we're editing in the period modal
+// Cross-month scripts cache: { client -> [scripts with _monthKey] }
+let crossData = { anton: null, dima: null, misc: null };
 let editingPeriodClient = null;
 
 const now = new Date();
@@ -467,26 +468,79 @@ function setSyncStatus(state) {
 }
 
 function fmtDate(str) {
-  // 'YYYY-MM-DD' → 'Д МЕС'
   if(!str) return '';
   const d = new Date(str + 'T00:00:00');
   const months = ['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
   return d.getDate() + ' ' + months[d.getMonth()];
 }
 
-// Returns filtered scripts for client based on clientPeriod
-function getFilteredScripts(c) {
-  const all = data.scripts[c] || [];
-  const p = clientPeriods[c];
-  if(!p || (!p.from && !p.to)) return all;
+// Get months range that covers the period
+function monthsInRange(from, to) {
+  if(!from && !to) return [];
+  const start = from ? new Date(from + 'T00:00:00') : new Date(to + 'T00:00:00');
+  const end   = to   ? new Date(to   + 'T00:00:00') : new Date(from + 'T00:00:00');
+  const keys = [];
+  let y = start.getFullYear(), m = start.getMonth();
+  while(y < end.getFullYear() || (y === end.getFullYear() && m <= end.getMonth())) {
+    keys.push(monthKey(y, m));
+    m++; if(m > 11){ m=0; y++; }
+    if(keys.length > 24) break; // safety
+  }
+  return keys;
+}
 
-  return all.filter(s => {
-    if(!s.deadline) return false; // hide if no deadline and period is set
-    const d = s.deadline; // 'YYYY-MM-DD'
+// Returns filtered scripts for client — cross-month when period active
+function getFilteredScripts(c) {
+  const p = clientPeriods[c];
+  if(!p || (!p.from && !p.to)) {
+    // No filter — return current month scripts
+    return data.scripts[c] || [];
+  }
+  // Filter active — use cross-month cache if ready, else fallback to current
+  const src = crossData[c] !== null ? crossData[c] : (data.scripts[c] || []);
+  return src.filter(s => {
+    if(!s.deadline) return false;
+    const d = s.deadline;
     if(p.from && d < p.from) return false;
-    if(p.to && d > p.to) return false;
+    if(p.to   && d > p.to)   return false;
     return true;
   });
+}
+
+// ── CROSS-MONTH LOAD ──────────────────────────────────────────────────────────
+
+async function loadCrossData(c) {
+  const p = clientPeriods[c];
+  if(!p || (!p.from && !p.to)) {
+    crossData[c] = null;
+    return;
+  }
+  const keys = monthsInRange(p.from, p.to);
+  // Also include current view month in case scripts without deadline in range
+  if(!keys.includes(currentKey())) keys.push(currentKey());
+
+  setSyncStatus('syncing');
+  const allScripts = [];
+  await Promise.all(keys.map(async key => {
+    try {
+      const snap = await getDoc(doc(db, 'months', key));
+      if(snap.exists()) {
+        const mdata = snap.data();
+        (mdata.scripts?.[c] || []).forEach(s => {
+          allScripts.push({ ...s, _monthKey: key });
+        });
+      }
+    } catch(e) { /* ignore missing months */ }
+  }));
+
+  // Deduplicate by id (same script shouldn't appear twice)
+  const seen = new Set();
+  crossData[c] = allScripts.filter(s => {
+    if(!s.id || seen.has(s.id)) return false;
+    seen.add(s.id);
+    return true;
+  });
+  setSyncStatus('ok');
 }
 
 // ── PERIOD MODAL ─────────────────────────────────────────────────────────────
@@ -501,29 +555,28 @@ window.openPeriodModal = function(c) {
   document.getElementById('modal-period').classList.add('open');
 };
 
-window.savePeriod = function() {
+window.savePeriod = async function() {
   const from = document.getElementById('period-from-input').value;
   const to   = document.getElementById('period-to-input').value;
-  if(!from && !to) {
-    clientPeriods[editingPeriodClient] = null;
-  } else {
-    clientPeriods[editingPeriodClient] = { from, to };
-  }
+  clientPeriods[editingPeriodClient] = (from || to) ? { from, to } : null;
   closeModal('modal-period');
+  await loadCrossData(editingPeriodClient);
   updatePeriodButton(editingPeriodClient);
   renderClient(editingPeriodClient);
   renderSummary();
 };
 
-window.clearPeriod = function(c) {
+window.clearPeriod = async function(c) {
   clientPeriods[c] = null;
+  crossData[c] = null;
   updatePeriodButton(c);
   renderClient(c);
   renderSummary();
 };
 
-window.clearPeriodFromModal = function() {
+window.clearPeriodFromModal = async function() {
   clientPeriods[editingPeriodClient] = null;
+  crossData[editingPeriodClient] = null;
   closeModal('modal-period');
   updatePeriodButton(editingPeriodClient);
   renderClient(editingPeriodClient);
@@ -551,7 +604,7 @@ async function loadMonth(y, m) {
   setSyncStatus('syncing');
   if(unsubscribe) unsubscribe();
   const ref = doc(db, 'months', monthKey(y, m));
-  unsubscribe = onSnapshot(ref, (snap) => {
+  unsubscribe = onSnapshot(ref, async (snap) => {
     if(snap.exists()) {
       data = snap.data();
       if(!data.scripts) data.scripts = {anton:[],dima:[],misc:[]};
@@ -560,6 +613,8 @@ async function loadMonth(y, m) {
     } else {
       data = { scripts:{anton:[],dima:[],misc:[]}, deadlines:[] };
     }
+    // Refresh cross-data for clients with active filters
+    await Promise.all(CLIENTS.map(c => clientPeriods[c] ? loadCrossData(c) : Promise.resolve()));
     render();
     setSyncStatus('ok');
     document.getElementById('loading-screen').classList.add('hidden');
@@ -629,32 +684,84 @@ window.saveScript = async function() {
   btn.disabled = false;
 };
 
-let _delClient, _delIdx;
+// For cross-month scripts we need to know which month to save to
+function getScriptMonthKey(c, script) {
+  // If script has _monthKey it came from cross-month load
+  if(script._monthKey) return script._monthKey;
+  return currentKey();
+}
+
+let _delClient, _delId;
 window.confirmDelete = function(c, i) {
-  // i here is index in FILTERED array — map back to original
   const filtered = getFilteredScripts(c);
   const script = filtered[i];
-  const realIdx = (data.scripts[c]||[]).findIndex(s => s.id === script.id);
-  _delClient = c; _delIdx = realIdx;
+  _delClient = c;
+  _delId = script.id;
   document.getElementById('del-script-name').textContent = script.name;
   document.getElementById('modal-delete').classList.add('open');
 };
 
 window.doDeleteScript = async function() {
-  const script = data.scripts[_delClient][_delIdx];
-  data.scripts[_delClient].splice(_delIdx, 1);
-  if(script.id) data.deadlines = data.deadlines.filter(d => d.id !== script.id);
+  // Find which month this script lives in
+  const filtered = getFilteredScripts(_delClient);
+  const script = filtered.find(s => s.id === _delId);
+  if(!script) { closeModal('modal-delete'); return; }
+
+  const mKey = getScriptMonthKey(_delClient, script);
+
+  if(mKey === currentKey()) {
+    // Same month — edit in-memory and save
+    const realIdx = data.scripts[_delClient].findIndex(s => s.id === _delId);
+    if(realIdx !== -1) data.scripts[_delClient].splice(realIdx, 1);
+    data.deadlines = data.deadlines.filter(d => d.id !== _delId);
+    await saveData();
+  } else {
+    // Different month — load, edit, save that month
+    const snap = await getDoc(doc(db, 'months', mKey));
+    if(snap.exists()) {
+      const mdata = snap.data();
+      if(mdata.scripts?.[_delClient]) {
+        mdata.scripts[_delClient] = mdata.scripts[_delClient].filter(s => s.id !== _delId);
+      }
+      if(mdata.deadlines) mdata.deadlines = mdata.deadlines.filter(d => d.id !== _delId);
+      await setDoc(doc(db, 'months', mKey), mdata);
+    }
+  }
+
   closeModal('modal-delete');
-  await saveData();
+  // Refresh cross data
+  if(clientPeriods[_delClient]) await loadCrossData(_delClient);
+  renderClient(_delClient);
+  renderSummary();
 };
 
 window.cycleStatus = async function(c, filteredIdx) {
   const filtered = getFilteredScripts(c);
   const script = filtered[filteredIdx];
-  const realIdx = (data.scripts[c]||[]).findIndex(s => s.id === script.id);
-  if(realIdx === -1) return;
-  data.scripts[c][realIdx].status = (data.scripts[c][realIdx].status + 1) % 3;
-  await saveData();
+  if(!script) return;
+  const mKey = getScriptMonthKey(c, script);
+  const newStatus = (script.status + 1) % 3;
+
+  if(mKey === currentKey()) {
+    const realIdx = data.scripts[c].findIndex(s => s.id === script.id);
+    if(realIdx !== -1) data.scripts[c][realIdx].status = newStatus;
+    await saveData();
+  } else {
+    const snap = await getDoc(doc(db, 'months', mKey));
+    if(snap.exists()) {
+      const mdata = snap.data();
+      const idx = mdata.scripts?.[c]?.findIndex(s => s.id === script.id);
+      if(idx !== undefined && idx !== -1) mdata.scripts[c][idx].status = newStatus;
+      await setDoc(doc(db, 'months', mKey), mdata);
+    }
+  }
+  // Update local cross cache immediately for snappy UI
+  if(crossData[c]) {
+    const ci = crossData[c].findIndex(s => s.id === script.id);
+    if(ci !== -1) crossData[c][ci].status = newStatus;
+  }
+  renderClient(c);
+  renderSummary();
 };
 
 // ── DEADLINES ─────────────────────────────────────────────────────────────────
@@ -825,7 +932,6 @@ async function renderMonthHistory() {
     const el0=document.getElementById(`mn-${c}-0`);
     const cnt0=document.getElementById(`${c}-m0`);
     if(el0) el0.textContent=months[0].label;
-    // month 0 = current, use ALL scripts (not filtered) for history
     if(cnt0) cnt0.textContent=(data.scripts[c]||[]).length;
   });
   for(let i=1;i<=2;i++){
