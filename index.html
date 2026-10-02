@@ -992,7 +992,11 @@ window.switchTab = function(tab, btn) {
 };
 
 // Init
-loadMonth(viewYear, viewMonth);
+(async () => {
+  await restorePeriods();
+  CLIENTS.forEach(c => { try { updatePeriodButton(c); } catch(_) {} });
+  loadMonth(viewYear, viewMonth);
+})();
 </script>
 
 </body>
