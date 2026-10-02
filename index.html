@@ -201,6 +201,12 @@
 </head>
 <body>
 
+<div class="loading-screen hidden" id="login-screen">
+  <div class="loading-title">Сценарный дашборд</div>
+  <button id="login-btn" onclick="signInGoogle()" style="margin-top:8px;padding:12px 22px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-family:'Onest',sans-serif;font-size:14px;cursor:pointer">Войти через Google</button>
+  <div id="login-msg" style="font-size:12px;color:var(--muted);max-width:280px;text-align:center;line-height:1.5"></div>
+</div>
+
 <div class="loading-screen" id="loading-screen">
   <div class="loading-title">Загрузка дашборда</div>
   <div class="loading-dots"><div class="loading-dot"></div><div class="loading-dot"></div><div class="loading-dot"></div></div>
@@ -421,6 +427,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
 import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDKWaJcGfQdGktpStxaQMDCo2lk4dktFjI",
@@ -433,6 +440,18 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+const auth = getAuth(app);
+
+// Открытая копия для планера: только клиент, название, тип, статус, дедлайн — без сумм
+function publishMonth(key, mdata) {
+  const scripts = {};
+  ['anton','dima','misc'].forEach(c => {
+    scripts[c] = ((mdata && mdata.scripts && mdata.scripts[c]) || []).map(s => ({
+      id: s.id || '', name: s.name || '', type: s.type || 'video', status: s.status || 0, deadline: s.deadline || ''
+    }));
+  });
+  setDoc(doc(db, 'public', key), { scripts, updatedAt: Date.now() }).catch(e => console.error('Не удалось обновить открытую копию', e));
+}
 
 const CLIENTS = ['anton','dima','misc'];
 const CLIENT_COLOR = {anton:'red',dima:'blue',misc:'green'};
@@ -646,12 +665,14 @@ async function loadMonth(y, m) {
     console.error(err);
     setSyncStatus('offline');
     document.getElementById('loading-screen').classList.add('hidden');
+    if(err && err.code === 'permission-denied') showLogin('У этого аккаунта нет доступа к дашборду. Войдите через свой Google-аккаунт.');
   });
 }
 
 async function saveData() {
   setSyncStatus('syncing');
   await setDoc(doc(db, 'months', currentKey()), data);
+  publishMonth(currentKey(), data);
   setSyncStatus('ok');
 }
 
@@ -748,7 +769,7 @@ window.doDeleteScript = async function() {
         mdata.scripts[_delClient] = mdata.scripts[_delClient].filter(s => s.id !== _delId);
       }
       if(mdata.deadlines) mdata.deadlines = mdata.deadlines.filter(d => d.id !== _delId);
-      await setDoc(doc(db, 'months', mKey), mdata);
+      await setDoc(doc(db, 'months', mKey), mdata); publishMonth(mKey, mdata);
     }
   }
 
@@ -793,7 +814,7 @@ window.cycleStatus = async function(c, filteredIdx) {
         const mdata = snap.data();
         const idx = mdata.scripts?.[c]?.findIndex(s => s.id === script.id);
         if(idx !== undefined && idx !== -1) mdata.scripts[c][idx].status = newStatus;
-        await setDoc(doc(db, 'months', mKey), mdata);
+        await setDoc(doc(db, 'months', mKey), mdata); publishMonth(mKey, mdata);
       }
       setSyncStatus('ok');
     }
@@ -1016,12 +1037,40 @@ window.switchTab = function(tab, btn) {
   if(btn) btn.classList.add('active');
 };
 
-// Init
-(async () => {
+// Вход через Google
+function showLogin(msg) {
+  document.getElementById('loading-screen').classList.add('hidden');
+  document.getElementById('login-msg').textContent = msg || '';
+  document.getElementById('login-screen').classList.remove('hidden');
+}
+window.signInGoogle = async function() {
+  const provider = new GoogleAuthProvider();
+  document.getElementById('login-msg').textContent = '';
+  try {
+    await signInWithPopup(auth, provider);
+  } catch(e) {
+    if(e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') return;
+    if(e.code === 'auth/popup-blocked' || e.code === 'auth/operation-not-supported-in-this-environment') {
+      try { await signInWithRedirect(auth, provider); return; } catch(e2) { e = e2; }
+    }
+    console.error(e);
+    document.getElementById('login-msg').textContent = 'Не удалось войти (' + e.code + '). Попробуйте ещё раз.';
+  }
+};
+window.signOutDashboard = async function() { await signOut(auth); location.reload(); };
+
+// Init: ждём вход, потом восстанавливаем периоды и грузим месяц
+let appStarted = false;
+onAuthStateChanged(auth, async (user) => {
+  if(!user) { showLogin(''); return; }
+  document.getElementById('login-screen').classList.add('hidden');
+  if(appStarted) return;
+  appStarted = true;
+  document.getElementById('loading-screen').classList.remove('hidden');
   await restorePeriods();
   CLIENTS.forEach(c => { try { updatePeriodButton(c); } catch(_) {} });
   loadMonth(viewYear, viewMonth);
-})();
+});
 </script>
 
 </body>
