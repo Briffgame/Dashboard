@@ -449,6 +449,17 @@ let unsubscribe = null;
 
 // Per-client custom period { from: 'YYYY-MM-DD', to: 'YYYY-MM-DD' } or null
 let clientPeriods = { anton: null, dima: null, misc: null };
+  const PERIODS_KEY = 'dash-periods';
+async function persistPeriods() {
+  try { localStorage.setItem(PERIODS_KEY, JSON.stringify(clientPeriods)); } catch(_) {}
+  try { await setDoc(doc(db, 'settings', 'ui'), { periods: clientPeriods }, { merge: true }); } catch(e) { console.error('Не удалось сохранить периоды', e); }
+}
+async function restorePeriods() {
+  let saved = null;
+  try { const snap = await getDoc(doc(db, 'settings', 'ui')); if(snap.exists() && snap.data().periods) saved = snap.data().periods; } catch(_) {}
+  if(!saved) { try { saved = JSON.parse(localStorage.getItem(PERIODS_KEY)); } catch(_) {} }
+  if(saved) CLIENTS.forEach(c => { const p = saved[c]; clientPeriods[c] = (p && (p.from || p.to)) ? { from: p.from || '', to: p.to || '' } : null; });
+}
 // Cross-month scripts cache: { client -> [scripts with _monthKey] }
 let crossData = { anton: null, dima: null, misc: null };
 let editingPeriodClient = null;
@@ -560,7 +571,8 @@ window.openPeriodModal = function(c) {
 window.savePeriod = async function() {
   const from = document.getElementById('period-from-input').value;
   const to   = document.getElementById('period-to-input').value;
-  clientPeriods[editingPeriodClient] = (from || to) ? { from, to } : null;
+  clientPeriods[editingPeriodClient] = (from || to) ? { from, to } : null; 
+  persistPeriods();
   closeModal('modal-period');
   await loadCrossData(editingPeriodClient);
   updatePeriodButton(editingPeriodClient);
@@ -570,6 +582,7 @@ window.savePeriod = async function() {
 
 window.clearPeriod = async function(c) {
   clientPeriods[c] = null;
+  persistPeriods();
   crossData[c] = null;
   updatePeriodButton(c);
   renderClient(c);
@@ -578,6 +591,7 @@ window.clearPeriod = async function(c) {
 
 window.clearPeriodFromModal = async function() {
   clientPeriods[editingPeriodClient] = null;
+  persistPeriods();
   crossData[editingPeriodClient] = null;
   closeModal('modal-period');
   updatePeriodButton(editingPeriodClient);
