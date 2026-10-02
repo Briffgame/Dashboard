@@ -53,7 +53,9 @@
   .income-box{background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:8px 10px;display:flex;justify-content:space-between;align-items:center;}
   .income-amount{font-family:'Unbounded',sans-serif;font-size:13px;font-weight:600;color:var(--accent);}
 
-  .scripts-block{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:5px;overflow:hidden;min-height:60px;}
+     .scripts-block{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:5px;overflow:hidden;min-height:120px;display:flex;flex-direction:column;}
+   .scripts-block>.scripts-header{flex:none;}
+   .scripts-block>div:last-child{flex:1;min-height:0;overflow-y:auto;}
   .scripts-header{padding:6px 9px;border-bottom:1px solid var(--border);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;display:flex;justify-content:space-between;align-items:center;}
 
   .add-btn{background:none;border:1px solid var(--border);color:var(--accent);width:16px;height:16px;border-radius:3px;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center;transition:all .15s;flex-shrink:0;}
