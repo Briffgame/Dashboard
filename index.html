@@ -724,7 +724,10 @@ window.saveScript = async function() {
   const id = Date.now() + '_' + Math.random().toString(36).slice(2,7);
   data.scripts[curClient].push({id, name, type, status:0, deadline, income});
   if(deadline) data.deadlines.push({id, date:deadline, text:name, client:curClient});
+  const c = curClient;
   await saveData();
+  if(clientPeriods[c]) await loadCrossData(c);
+  render();
   closeModal('modal-script');
   btn.disabled = false;
 };
